@@ -8,8 +8,28 @@ const cors = require("cors");
 let senderStream;
 let consumers = [];
 
-app.use(cors({ origin: '*' }));
-app.use(express.static("public"));
+const allowedOrigins = [
+  'https://client-frontend-dz4k86j81-kushs-projects-deed01fb.vercel.app/'
+]
+const corsOptions = {
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      var msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+  credentials: true
+};
+
+// Apply CORS middleware to all routes
+app.use(cors(corsOptions));
+
+// Preflight request handling
+app.options('*', cors(corsOptions));app.use(express.static("public"));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
