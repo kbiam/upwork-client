@@ -5,19 +5,20 @@ const path = require('path');
 const cors = require('cors');
 const { Server } = require('socket.io');
 const http = require('http');
+const { v4: uuidv4 } = require('uuid'); // Importing UUID for unique IDs
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-let senderStream;
-let iceCandidates = [];
+let streams = {}; // Store streams by streamer ID
+let iceCandidates = {}; // Store ICE candidates by streamer ID
 
 app.use(cors({ origin: '*' }));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-let broadcasterSdpOffer;
+// app.use('/api', require("./Routes/authRoutes"));
 
 // Serve the static files from the React app
 app.use(express.static(path.resolve(__dirname, '../Frontend/build')));
@@ -27,12 +28,18 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../Frontend/build', 'index.html'));
 });
 
-app.post('/consumer', async ({ body }, res) => {
+app.post('/generate-stream-id', (req, res) => {
+  const streamerId = uuidv4(); // Generate unique ID for each stream
+  res.json({ streamerId });
+});
+
+app.post('/consumer/:streamerId', async (req, res) => {
+  const { streamerId } = req.params;
   try {
     const peer = new webrtc.RTCPeerConnection({
       iceServers: [
         {
-          urls: 'stun:stun.stunprotocol.org',
+          urls: 'stun:stunprotocol.org',
         },
       ],
     });
@@ -42,18 +49,22 @@ app.post('/consumer', async ({ body }, res) => {
         io.emit('new-ice-candidate', {
           candidate: event.candidate,
           role: 'consumer',
+          streamerId,
         });
       }
     };
-
-    const desc = new webrtc.RTCSessionDescription(body.sdp);
+    // console.log(req.body,"body")
+    const desc = new webrtc.RTCSessionDescription(req.body);
+    console.log('Received SDP:'); // Log the received SDP
+    console.log('SDP Type:', desc.type); // Log the SDP type
     await peer.setRemoteDescription(desc);
 
-    if (!senderStream) {
-      return res.status(404).json({ message: 'No Stream to watch' });
+    console.log(streams)
+    if (!streams[streamerId]) {
+      return res.status(403).json({ message: 'No Stream to watch' });
     }
 
-    senderStream.getTracks().forEach((track) => peer.addTrack(track, senderStream));
+    streams[streamerId].getTracks().forEach((track) => peer.addTrack(track, streams[streamerId]));
     const answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
 
@@ -62,78 +73,105 @@ app.post('/consumer', async ({ body }, res) => {
     };
     res.json(payload);
 
-    iceCandidates.forEach(async (candidate) => {
-      try {
-        await peer.addIceCandidate(candidate);
-      } catch (e) {
-        console.error('Error adding ICE candidate:', e);
-      }
-    });
+    if (iceCandidates[streamerId]) {
+      iceCandidates[streamerId].forEach(async (candidate) => {
+        try {
+          await peer.addIceCandidate(candidate);
+        } catch (e) {
+          console.error('Error adding ICE candidate:', e);
+        }
+      });
+    }
   } catch (error) {
     console.error('Error in /consumer:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/broadcast', async ({ body }, res) => {
+app.post('/broadcast/:streamerId', async (req, res) => {
+  const { streamerId } = req.params;
+  console.log("streamerId",streamerId)
   try {
     const peer = new webrtc.RTCPeerConnection({
       iceServers: [
         {
-          urls: 'stun:stun.stunprotocol.org',
+          urls: 'stun:stunprotocol.org',
         },
       ],
     });
 
-    peer.ontrack = (e) => handleTrackEvent(e, peer);
+    peer.ontrack = (e) => handleTrackEvent(e, streamerId);
     peer.onicecandidate = (event) => {
       if (event.candidate) {
         io.emit('new-ice-candidate', {
           candidate: event.candidate,
           role: 'broadcaster',
+          streamerId,
         });
       }
     };
-
-    const desc = new webrtc.RTCSessionDescription(body.sdp);
+    
+    const desc = new webrtc.RTCSessionDescription(req.body.sdp);
+    // console.log('Received SDP:', desc); // Log the received SDP
+    // console.log('SDP Type:', desc.type); // Log the SDP type
     await peer.setRemoteDescription(desc);
 
     const answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
-
-    broadcasterSdpOffer = peer.localDescription;
 
     const payload = {
       sdp: peer.localDescription,
     };
     res.json(payload);
 
-    iceCandidates.forEach(async (candidate) => {
-      try {
-        await peer.addIceCandidate(candidate);
-      } catch (e) {
-        console.error('Error adding ICE candidate:', e);
-      }
-    });
+    if (iceCandidates[streamerId]) {
+      iceCandidates[streamerId].forEach(async (candidate) => {
+        try {
+          await peer.addIceCandidate(candidate);
+        } catch (e) {
+          console.error('Error adding ICE candidate:', e);
+        }
+      });
+    }
   } catch (error) {
     console.error('Error in /broadcast:', error);
     res.status(500).json({ error: error.message });
   }
 });
-app.post('/ice-candidate', (req, res) => {
+
+
+app.post('/ice-candidate/:streamerId', (req, res) => {
   const { candidate, role } = req.body;
-  io.emit('new-ice-candidate', { candidate, role }); // Emit to all connected clients
+  const { streamerId } = req.params;
+
+  if (!iceCandidates[streamerId]) {
+    iceCandidates[streamerId] = [];
+  }
+  iceCandidates[streamerId].push(candidate);
+  io.emit('new-ice-candidate', { candidate, role, streamerId });
+
   res.sendStatus(200);
 });
 
+function handleTrackEvent(e, streamerId) {
+  if (e.streams && e.streams[0]) {
+    console.log("streams[0]",e.streams[0])
+    streams[streamerId] = e.streams[0];
+    console.log("streams{stremaerId]",streams)
 
-function handleTrackEvent(e, peer) {
-  senderStream = e.streams[0];
+    console.log(`Stream added for streamerId ${streamerId}:`, streams[streamerId]);
+  } else {
+    console.error(`No stream found in track event for streamerId ${streamerId}`);
+  }
 }
 
+
 io.on('connection', (socket) => {
-  socket.on('ice-candidate', ({ candidate }) => {
-    iceCandidates.push(candidate);
+  socket.on('ice-candidate', ({ candidate, streamerId }) => {
+    if (!iceCandidates[streamerId]) {
+      iceCandidates[streamerId] = [];
+    }
+    iceCandidates[streamerId].push(candidate);
   });
 });
 
