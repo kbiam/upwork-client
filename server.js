@@ -9,7 +9,14 @@ const { v4: uuidv4 } = require('uuid'); // Importing UUID for unique IDs
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server,{
+  cors: {
+    origin: ['http://localhost:3000', "https://client-frontend-sigma.vercel.app/"],
+    methods: ['GET', 'POST'],
+    allowedHeaders: ['Content-Type'],
+    credentials: true
+  }
+});
 
 let streams = {}; // Store streams by streamer ID
 let iceCandidates = {}; // Store ICE candidates by streamer ID
